@@ -20,6 +20,7 @@
     slouken@libsdl.org
 */
 #include "SDL_config.h"
+#include <stdio.h>
 
 /* The high-level video driver subsystem */
 
@@ -632,6 +633,10 @@ SDL_Surface * SDL_SetVideoMode (int width, int height, int bpp, Uint32 flags)
 		/* Use hardware surfaces when double-buffering */
 		flags |= SDL_HWSURFACE;
 	}
+    printf("Overriding hardware surface in SDL_Init\n");
+	flags |= SDL_HWSURFACE;
+    printf("Overriding double buffering in SDL_Init\n");
+    flags |= SDL_DOUBLEBUF;
 
 	is_opengl = ( ( flags & SDL_OPENGL ) == SDL_OPENGL );
 	if ( is_opengl ) {
