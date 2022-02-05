@@ -56,6 +56,7 @@ SDL_Surface * SDL_CreateRGBSurface (Uint32 flags,
 	} else {
 		screen = NULL;
 	}
+	flags |= SDL_HWSURFACE;
 	if ( screen && ((screen->flags&SDL_HWSURFACE) == SDL_HWSURFACE) ) {
 		if ( (flags&(SDL_SRCCOLORKEY|SDL_SRCALPHA)) != 0 ) {
 			flags |= SDL_HWSURFACE;
