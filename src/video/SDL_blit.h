@@ -394,7 +394,7 @@ do {						\
 #if defined(_MSC_VER) && (_MSC_VER == 1300)
 /* There's a bug in the Visual C++ 7 optimizer when compiling this code */
 #else
-#define USE_DUFFS_LOOP
+#undef USE_DUFFS_LOOP
 #endif
 #ifdef USE_DUFFS_LOOP
 
