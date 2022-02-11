@@ -338,6 +338,7 @@ int SDL_CalculateBlit(SDL_Surface *surface)
 	}
 
 	/* Choose software blitting function */
+    surface->flags &= ~SDL_RLEACCELOK;
 	if(surface->flags & SDL_RLEACCELOK
 	   && (surface->flags & SDL_HWACCEL) != SDL_HWACCEL) {
 

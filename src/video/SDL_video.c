@@ -936,9 +936,8 @@ SDL_Surface * SDL_DisplayFormat (SDL_Surface *surface)
 		flags = SDL_SWSURFACE;
 #ifdef AUTORLE_DISPLAYFORMAT
 	flags |= (surface->flags & (SDL_SRCCOLORKEY|SDL_SRCALPHA));
-	flags |= SDL_RLEACCELOK;
 #else
-	flags |= surface->flags & (SDL_SRCCOLORKEY|SDL_SRCALPHA|SDL_RLEACCELOK);
+	flags |= surface->flags & (SDL_SRCCOLORKEY|SDL_SRCALPHA);
 #endif
 	return(SDL_ConvertSurface(surface, SDL_PublicSurface->format, flags));
 }
@@ -994,7 +993,7 @@ SDL_Surface *SDL_DisplayFormatAlpha(SDL_Surface *surface)
 	}
 	format = SDL_AllocFormat(32, rmask, gmask, bmask, amask);
 	flags = SDL_PublicSurface->flags & SDL_HWSURFACE;
-	flags |= surface->flags & (SDL_SRCALPHA | SDL_RLEACCELOK);
+	flags |= surface->flags & (SDL_SRCALPHA);
 	converted = SDL_ConvertSurface(surface, format, flags);
 	SDL_FreeFormat(format);
 	return(converted);
