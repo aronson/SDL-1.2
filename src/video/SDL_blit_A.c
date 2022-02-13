@@ -2718,7 +2718,7 @@ __m128i MixRGBAx4(__m128i src, __m128i dst, SDL_PixelFormat* fmt) {
 
 // TOSO: Convert to SSE4 compatabile function
 __attribute__((target ("avx2")))
-Uint32 MixRGBA(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
+Uint32 MixRGBAavx2(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
     Uint32 alpha = (src&fmt->Amask)>>fmt->Ashift;
 
 	__m128i srci = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(src));
@@ -2735,7 +2735,21 @@ Uint32 MixRGBA(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
 	return _mm_extract_epi32(result, 0);
 }
 
+Uint32 MixRGBASafe(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
+    Uint32 alpha = (src&fmt->Amask)>>fmt->Ashift;
+    __m128i srci = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(src));
+    __m128i dsti = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(dst));
+    __m128i sub = _mm_sub_epi16(srci, dsti);
+    __m128i mul = _mm_mullo_epi16(sub, _mm_set1_epi16(alpha));
+    __m128i shift = _mm_srli_epi16(_mm_add_epi16(mul, _mm_set1_epi16(255)), 8);
+    __m128i mix = _mm_add_epi16(shift, dsti);
+    __m128i mask = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4, 2, 0);
+    __m128i result = _mm_shuffle_epi8(mix, mask);
+    return _mm_extract_epi32(result, 0);
+ }
+
 static int hasAVX2 = -1;
+static int hasAVX1 = -1;
 
 /* General (slow) N->N blending with pixel alpha */
 static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
@@ -2781,7 +2795,7 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 				Uint32 c_src = argbToABGR(GetRGBA(src));
 				Uint32 c_dst = GetRGBA(dst);
 
-				Uint32 c_mix = MixRGBA(c_src, c_dst, srcfmt);
+				Uint32 c_mix = MixRGBAavx2(c_src, c_dst, srcfmt);
 				PutRGBA(dst, c_mix);
 
 				src += srcbpp;
@@ -2793,7 +2807,25 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 		}
 
 		return;
-	}
+	} else if (srcbpp == 4 && dstbpp == 4) {
+ 		while ( height-- ) {
+ 		    DUFFS_LOOP4(
+ 		    {
+ 				Uint32 c_src = argbToABGR(GetRGBA(src));
+ 				Uint32 c_dst = GetRGBA(dst);
+
+ 				Uint32 c_mix = MixRGBASafe(c_src, c_dst, srcfmt);
+ 				PutRGBA(dst, c_mix);
+
+ 				src += srcbpp;
+ 				dst += dstbpp;
+ 		    },
+ 		    width);
+ 		    src += srcskip;
+ 		    dst += dstskip;
+ 		}
+ 		return;
+ 	}
 
 	/* FIXME: for 8bpp source alpha, this doesn't get opaque values
 	   quite right. for <8bpp source alpha, it gets them very wrong
