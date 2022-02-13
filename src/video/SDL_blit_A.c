@@ -24,6 +24,10 @@
 #include "SDL_video.h"
 #include "SDL_blit.h"
 
+#include <xmmintrin.h>
+#include <smmintrin.h>
+#include <immintrin.h>
+
 /*
   In Visual C, VC6 has mmintrin.h in the "Processor Pack" add-on.
    Checking if _mm_free is #defined in malloc.h is is the only way to
@@ -2667,6 +2671,66 @@ static void BlitNtoNSurfaceAlphaKey(SDL_BlitInfo *info)
 	}
 }
 
+__m128i argbToABGRx4(__m128i colors) {
+	__m128i b = _mm_set_epi8(15, 12, 13, 14, 11, 8, 9, 10, 7, 4, 5, 6, 3, 0, 1, 2);
+
+	return  _mm_shuffle_epi8(colors, b);
+}
+
+int argbToABGR(uint32_t color1) {
+	__m128i a = _mm_set_epi32(0, 0, 0, color1);
+	__m128i b = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 3, 0, 1, 2);
+
+	return  _mm_extract_epi32(_mm_shuffle_epi8(a, b), 0);
+}
+
+Uint32 GetRGBA(Uint8 *buf)
+{
+	return *((Uint32 *)(buf));
+}
+
+void PutRGBA(Uint8 *buf, Uint32 color) {
+	*((Uint32 *)(buf)) = color;
+}
+
+__m128i MixRGBAx4(__m128i src, __m128i dst, SDL_PixelFormat* fmt) {
+    __m128i alphaMask = _mm_set_epi8(15, 15, 15, 15, 11, 11, 11, 11, 7, 7, 7, 7, 3, 3, 3, 3);
+	__m256i alpha = _mm256_cvtepu8_epi16(_mm_shuffle_epi8(src, alphaMask));
+
+	__m256i srci = _mm256_cvtepu8_epi16(src);
+	__m256i dsti = _mm256_cvtepu8_epi16(dst);
+
+	__m256i sub = _mm256_sub_epi16(srci, dsti);
+	__m256i mul = _mm256_mullo_epi16(sub, alpha);
+	__m256i shift = _mm256_srli_epi16(_mm256_add_epi16(mul, _mm256_set1_epi16(255)), 8);
+	__m256i mix = _mm256_add_epi16(shift, dsti);
+
+	__m128i m1 = _mm256_extractf128_si256(mix, 0);
+	__m128i m2 = _mm256_extractf128_si256(mix, 1);
+
+	__m128i rm1 = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 10, 8, -1, 4, 2, 0);
+	__m128i rm2 = _mm_set_epi8(-1, 28, 26, 24, -1, 20, 18, 16, -1, -1, -1, -1, -1, -1, -1, -1);
+
+	return _mm_or_si128(_mm_shuffle_epi8(m1, rm1), _mm_shuffle_epi8(m2, rm2));
+}
+
+Uint32 MixRGBA(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
+    Uint32 alpha = (src&fmt->Amask)>>fmt->Ashift;
+
+	__m128i srci = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(src));
+	__m128i dsti = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(dst));
+
+	__m128i sub = _mm_sub_epi16(srci, dsti);
+	__m128i mul = _mm_mullo_epi16(sub, _mm_set1_epi16(alpha));
+	__m128i shift = _mm_srli_epi16(_mm_add_epi16(mul, _mm_set1_epi16(255)), 8);
+	__m128i mix = _mm_add_epi16(shift, dsti);
+
+	__m128i mask = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4, 2, 0);
+	__m128i result = _mm_shuffle_epi8(mix, mask);
+
+	return _mm_extract_epi32(result, 0);
+}
+
 /* General (slow) N->N blending with pixel alpha */
 static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 {
@@ -2685,6 +2749,41 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 	/* Set up some basic variables */
 	srcbpp = srcfmt->BytesPerPixel;
 	dstbpp = dstfmt->BytesPerPixel;
+
+	if (srcbpp == 4 && dstbpp == 4) {
+		while ( height-- ) {
+			int x = 0;
+
+			// Copy pixels in 4-wide blocks
+		    for (; x + 4 <= width; x += 4) {
+				__m128i c_src = argbToABGRx4(_mm_loadu_si128((__m128i*) src));
+				__m128i c_dst = _mm_loadu_si128((__m128i*) dst);
+
+				__m128i c_mix = MixRGBAx4(c_src, c_dst, srcfmt);
+				_mm_storeu_si128((__m128i*) dst, c_mix);
+
+				src += srcbpp * 4;
+				dst += dstbpp * 4;
+		    }
+
+		    // Copy remaining pixels
+		    for (; x < width; x++) {
+				Uint32 c_src = argbToABGR(GetRGBA(src));
+				Uint32 c_dst = GetRGBA(dst);
+
+				Uint32 c_mix = MixRGBA(c_src, c_dst, srcfmt);
+				PutRGBA(dst, c_mix);
+
+				src += srcbpp;
+				dst += dstbpp;
+		    }
+
+		    src += srcskip;
+		    dst += dstskip;
+		}
+
+		return;
+	}
 
 	/* FIXME: for 8bpp source alpha, this doesn't get opaque values
 	   quite right. for <8bpp source alpha, it gets them very wrong
@@ -2717,7 +2816,6 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 	    dst += dstskip;
 	}
 }
-
 
 SDL_loblit SDL_CalculateAlphaBlit(SDL_Surface *surface, int blit_index)
 {
