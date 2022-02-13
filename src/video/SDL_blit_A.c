@@ -2732,6 +2732,8 @@ Uint32 MixRGBA(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
 	return _mm_extract_epi32(result, 0);
 }
 
+static int hasAVX2 = -1;
+
 /* General (slow) N->N blending with pixel alpha */
 static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 {
@@ -2746,12 +2748,15 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 
 	int  srcbpp;
 	int  dstbpp;
+	if(hasAVX2 == -1) {
+		hasAVX2 = __builtin_cpu_supports("avx2");
+	}
 
 	/* Set up some basic variables */
 	srcbpp = srcfmt->BytesPerPixel;
 	dstbpp = dstfmt->BytesPerPixel;
 
-	if (srcbpp == 4 && dstbpp == 4) {
+	if (hasAVX2 && srcbpp == 4 && dstbpp == 4) {
 		while ( height-- ) {
 			int x = 0;
 
