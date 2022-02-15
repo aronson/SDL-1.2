@@ -2716,6 +2716,7 @@ __m128i MixRGBAx4(__m128i src, __m128i dst, SDL_PixelFormat* fmt) {
 	return _mm_or_si128(_mm_shuffle_epi8(m1, rm1), _mm_shuffle_epi8(m2, rm2));
 }
 
+
 // TOSO: Convert to SSE4 compatabile function
 __attribute__((target ("avx2")))
 Uint32 MixRGBAavx2(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
