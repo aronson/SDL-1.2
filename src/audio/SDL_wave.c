@@ -25,6 +25,10 @@
 
 #include "SDL_audio.h"
 #include "SDL_wave.h"
+#if defined(_MSC_VER)
+#include <Windows.h>
+#include <Libloaderapi.h>
+#endif
 
 
 static int ReadChunk(SDL_RWops *src, Chunk *chunk);
@@ -577,7 +581,13 @@ done:
 void SDL_FreeWAV(Uint8 *audio_buf)
 {
 	if ( audio_buf != NULL ) {
+#if defined(_MSC_VER)
+	typedef void (*free_t)(void *);
+	free_t msvcrt_free = (free_t)(GetProcAddress(GetModuleHandle(TEXT("msvcrt")), "free"));
+	msvcrt_free(audio_buf);
+#else
 		SDL_free(audio_buf);
+#endif
 	}
 }
 

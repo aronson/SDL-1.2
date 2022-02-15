@@ -27,7 +27,7 @@
 #include <xmmintrin.h>
 #include <smmintrin.h>
 #include <immintrin.h>
-#include <x86intrin.h>
+//#include <x86intrin.h>
 
 /*
   In Visual C, VC6 has mmintrin.h in the "Processor Pack" add-on.
@@ -2694,7 +2694,7 @@ void PutRGBA(Uint8 *buf, Uint32 color) {
 	*((Uint32 *)(buf)) = color;
 }
 
-__attribute__((target ("avx2")))
+//__attribute__((target ("avx2")))
 __m128i MixRGBAx4(__m128i src, __m128i dst, SDL_PixelFormat* fmt) {
     __m128i alphaMask = _mm_set_epi8(15, 15, 15, 15, 11, 11, 11, 11, 7, 7, 7, 7, 3, 3, 3, 3);
 	__m256i alpha = _mm256_cvtepu8_epi16(_mm_shuffle_epi8(src, alphaMask));
@@ -2716,8 +2716,8 @@ __m128i MixRGBAx4(__m128i src, __m128i dst, SDL_PixelFormat* fmt) {
 	return _mm_or_si128(_mm_shuffle_epi8(m1, rm1), _mm_shuffle_epi8(m2, rm2));
 }
 
-// TOSO: Convert to SSE4 compatabile function
-__attribute__((target ("avx2")))
+// TODO: Convert to SSE4 compatabile function
+//__attribute__((target ("avx2")))
 Uint32 MixRGBAavx2(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
     Uint32 alpha = (src&fmt->Amask)>>fmt->Ashift;
 
@@ -2766,8 +2766,8 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 	int  srcbpp;
 	int  dstbpp;
 	if(hasAVX2 == -1) {
-        __builtin_cpu_init();
-		hasAVX2 = __builtin_cpu_supports("avx2");
+        //__builtin_cpu_init();
+		//hasAVX2 = __builtin_cpu_supports("avx2");
 	}
 
 	/* Set up some basic variables */
