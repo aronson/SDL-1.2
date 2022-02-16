@@ -2685,34 +2685,68 @@ int argbToABGR(uint32_t color1) {
 	return  _mm_extract_epi32(_mm_shuffle_epi8(a, b), 0);
 }
 
+Uint32 GetRGBA(Uint8 *buf)
+{
+	return *((Uint32 *)(buf));
+}
+
+void PutRGBA(Uint8 *buf, Uint32 color) {
+	*((Uint32 *)(buf)) = color;
+}
+
 //__attribute__((target ("avx2")))
-__m128i MixRGBA_AVX2(__m128i src, __m128i dst) {
-	const __m128i SHUFFLE_ALPHA = _mm_set_epi8(15, 15, 15, 15, 11, 11, 11, 11, 7, 7, 7, 7, 3, 3, 3, 3);
-	__m128i alpha = _mm_shuffle_epi8(src, SHUFFLE_ALPHA);
+__m128i MixRGBAx4(__m128i src, __m128i dst, SDL_PixelFormat* fmt) {
+    __m128i alphaMask = _mm_set_epi8(15, 15, 15, 15, 11, 11, 11, 11, 7, 7, 7, 7, 3, 3, 3, 3);
+	__m256i alpha = _mm256_cvtepu8_epi16(_mm_shuffle_epi8(src, alphaMask));
 
-	__m128i sub = _mm_sub_epi8(src, dst);
-	__m256i mul = _mm256_mullo_epi16(_mm256_cvtepu8_epi16(sub), _mm256_cvtepu8_epi16(alpha));
+	__m256i srci = _mm256_cvtepu8_epi16(src);
+	__m256i dsti = _mm256_cvtepu8_epi16(dst);
 
-	const __m256i SHUFFLE_REDUCE = _mm256_set_epi8(-1, -1, -1, -1, 31, 29, 27, 25, -1, -1, -1, -1, 23, 21, 19, 17,
-			-1, -1, -1, -1, 15, 13, 11, 9, -1, -1, -1, -1, 7, 5, 3, 1);
-	const __m256i SHUFFLE_PACK = _mm256_set_epi32(-1, -1, -1, -1, 6, 4, 2, 0);
+	__m256i sub = _mm256_sub_epi16(srci, dsti);
+	__m256i mul = _mm256_mullo_epi16(sub, alpha);
+	__m256i shift = _mm256_srli_epi16(_mm256_add_epi16(mul, _mm256_set1_epi16(255)), 8);
+	__m256i mix = _mm256_add_epi16(shift, dsti);
 
-	__m256i reduced = _mm256_shuffle_epi8(mul, SHUFFLE_REDUCE);
-	__m256i packed = _mm256_permutevar8x32_epi32(reduced, SHUFFLE_PACK);
+	__m128i m1 = _mm256_extractf128_si256(mix, 0);
+	__m128i m2 = _mm256_extractf128_si256(mix, 1);
 
-	return _mm_add_epi8(_mm256_castsi256_si128(packed), dst);
+	__m128i rm1 = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, 12, 10, 8, -1, 4, 2, 0);
+	__m128i rm2 = _mm_set_epi8(-1, 28, 26, 24, -1, 20, 18, 16, -1, -1, -1, -1, -1, -1, -1, -1);
+
+	return _mm_or_si128(_mm_shuffle_epi8(m1, rm1), _mm_shuffle_epi8(m2, rm2));
 }
 
-__m128i MixRGBA_SSE41(__m128i src, __m128i dst) {
-	const __m128i SHUFFLE_ALPHA = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, 7, 7, 7, 7, 3, 3, 3, 3);
-	__m128i alpha = _mm_shuffle_epi8(src, SHUFFLE_ALPHA);
+// TODO: Convert to SSE4 compatabile function
+//__attribute__((target ("avx2")))
+Uint32 MixRGBAavx2(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
+    Uint32 alpha = (src&fmt->Amask)>>fmt->Ashift;
 
-	__m128i sub = _mm_sub_epi8(src, dst);
-	__m128i mul = _mm_mullo_epi16(_mm_cvtepu8_epi16(sub), _mm_cvtepu8_epi16(alpha));
-	__m128i shi = _mm_srli_epi16(mul, 8);
+	__m128i srci = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(src));
+	__m128i dsti = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(dst));
 
-	return _mm_packus_epi16(shi, dst);
+	__m128i sub = _mm_sub_epi16(srci, dsti);
+	__m128i mul = _mm_mullo_epi16(sub, _mm_set1_epi16(alpha));
+	__m128i shift = _mm_srli_epi16(_mm_add_epi16(mul, _mm_set1_epi16(255)), 8);
+	__m128i mix = _mm_add_epi16(shift, dsti);
+
+	__m128i mask = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4, 2, 0);
+	__m128i result = _mm_shuffle_epi8(mix, mask);
+
+	return _mm_extract_epi32(result, 0);
 }
+
+Uint32 MixRGBASafe(Uint32 src, Uint32 dst, SDL_PixelFormat* fmt) {
+    Uint32 alpha = (src&fmt->Amask)>>fmt->Ashift;
+    __m128i srci = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(src));
+    __m128i dsti = _mm_cvtepu8_epi16(_mm_cvtsi32_si128(dst));
+    __m128i sub = _mm_sub_epi16(srci, dsti);
+    __m128i mul = _mm_mullo_epi16(sub, _mm_set1_epi16(alpha));
+    __m128i shift = _mm_srli_epi16(_mm_add_epi16(mul, _mm_set1_epi16(255)), 8);
+    __m128i mix = _mm_add_epi16(shift, dsti);
+    __m128i mask = _mm_set_epi8(-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, 4, 2, 0);
+    __m128i result = _mm_shuffle_epi8(mix, mask);
+    return _mm_extract_epi32(result, 0);
+ }
 
 static int hasAVX2 = -1;
 static int hasAVX1 = -1;
@@ -2740,52 +2774,59 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 	srcbpp = srcfmt->BytesPerPixel;
 	dstbpp = dstfmt->BytesPerPixel;
 
-	if (srcbpp == 4 && dstbpp == 4) {
+	if (hasAVX2 && srcbpp == 4 && dstbpp == 4) {
 		while ( height-- ) {
 			int x = 0;
 
 			// Copy pixels in 4-wide blocks
-			for (; x + 4 <= width; x += 4) {
+		    for (; x + 4 <= width; x += 4) {
 				__m128i c_src = argbToABGRx4(_mm_loadu_si128((__m128i*) src));
 				__m128i c_dst = _mm_loadu_si128((__m128i*) dst);
 
-				__m128i c_mix = MixRGBA_AVX2(c_src, c_dst);
+				__m128i c_mix = MixRGBAx4(c_src, c_dst, srcfmt);
 				_mm_storeu_si128((__m128i*) dst, c_mix);
 
-				src += 16;
-				dst += 16;
-			}
+				src += srcbpp * 4;
+				dst += dstbpp * 4;
+		    }
 
-			// Copy pixels in 2-wide blocks
-			for (; x + 2 <= width; x += 2) {
-				__m128i c_src = argbToABGRx4(_mm_loadu_si64(src));
-				__m128i c_dst = _mm_loadu_si64(dst);
+		    // Copy remaining pixels
+		    for (; x < width; x++) {
+				Uint32 c_src = argbToABGR(GetRGBA(src));
+				Uint32 c_dst = GetRGBA(dst);
 
-				__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
-				_mm_storeu_si64(dst, c_mix);
+				Uint32 c_mix = MixRGBAavx2(c_src, c_dst, srcfmt);
+				PutRGBA(dst, c_mix);
 
-				src += 8;
-				dst += 8;
-			}
+				src += srcbpp;
+				dst += dstbpp;
+		    }
 
-			// Copy remaining pixel
-			for (; x < width; x++) {
-				__m128i c_src = argbToABGRx4(_mm_loadu_si32(src));
-				__m128i c_dst = _mm_loadu_si32(dst);
-
-				__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
-				_mm_storeu_si32(dst, c_mix);
-
-				src += 4;
-				dst += 4;
-			}
-
-			src += srcskip;
-			dst += dstskip;
+		    src += srcskip;
+		    dst += dstskip;
 		}
 
 		return;
-	}
+	} else if (srcbpp == 4 && dstbpp == 4) {
+ 		while ( height-- ) {
+ 		    DUFFS_LOOP4(
+ 		    {
+ 				Uint32 c_src = argbToABGR(GetRGBA(src));
+ 				Uint32 c_dst = GetRGBA(dst);
+
+ 				Uint32 c_mix = MixRGBASafe(c_src, c_dst, srcfmt);
+ 				PutRGBA(dst, c_mix);
+
+ 				src += srcbpp;
+ 				dst += dstbpp;
+ 		    },
+ 		    width);
+ 		    src += srcskip;
+ 		    dst += dstskip;
+ 		}
+ 		return;
+ 	}
+
 	/* FIXME: for 8bpp source alpha, this doesn't get opaque values
 	   quite right. for <8bpp source alpha, it gets them very wrong
 	   (check all macros!)
