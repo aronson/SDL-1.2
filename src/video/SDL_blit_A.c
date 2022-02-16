@@ -2706,7 +2706,9 @@ __m128i argbToABGRx4(__m128i colors) {
 	return  _mm_shuffle_epi8(colors, b);
 }
 
-//__attribute__((target ("avx2")))
+#ifndef _MSC_VER
+__attribute__((target ("avx2")))
+#endif
 __m128i MixRGBA_AVX2(__m128i src, __m128i dst) {
     __m256i src_color = _mm256_cvtepu8_epi16(src);
     __m256i dst_color = _mm256_cvtepu8_epi16(dst);
