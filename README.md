@@ -1,6 +1,6 @@
 Cogmind Performance Mod Fork
 ==
-This project is a fork of the **deprecated** Simple Directmedia Layer 1.2 project. It has changes and bugfixes specific to the delightful roguelike [Cogmind](https://gridsagegames.com/cogmind/).
+This project is a fork of the **deprecated** [Simple Directmedia Layer 1.2 project](https://github.com/libsdl-org/SDL-1.2). It has changes and bugfixes specific to the delightful roguelike [Cogmind](https://gridsagegames.com/cogmind/).
 
 It promises up to 100-500% speedups on modern systems over the retail build shipped with the game. The effect is most noticable when the engine is under stress, by panning the map or in combat with multiple enemies.
 
