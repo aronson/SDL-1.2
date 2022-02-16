@@ -2762,10 +2762,10 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 
 			// Copy pixels in 2-wide blocks
 			for (; x + 2 <= width; x += 2) {
-				__m128i c_src = _mm_loadu_si64(src);
+				__m128i c_src = argbToABGRx4(_mm_loadu_si64(src));
 				__m128i c_dst = _mm_loadu_si64(dst);
 
-				__m128i c_mix = argbToABGRx4(MixRGBA_SSE41(c_src, c_dst));
+				__m128i c_mix = (MixRGBA_SSE41(c_src, c_dst));
 				_mm_storeu_si64(dst, c_mix);
 
 				src += 8;
@@ -2774,10 +2774,10 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 
 			// Copy remaining pixel
 			for (; x < width; x++) {
-				__m128i c_src = _mm_loadu_si32(src);
+				__m128i c_src = argbToABGRx4(_mm_loadu_si32(src));
 				__m128i c_dst = _mm_loadu_si32(dst);
 
-				__m128i c_mix = argbToABGRx4(MixRGBA_SSE41(c_src, c_dst));
+				__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
 				_mm_storeu_si32(dst, c_mix);
 
 				src += 4;
