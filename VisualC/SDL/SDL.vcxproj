@@ -141,6 +141,9 @@
       <ImportLibrary>.\Release\SDL.lib</ImportLibrary>
       <AdditionalDependencies>winmm.lib;dxguid.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
+    <PostBuildEvent>
+      <Command>copy "$(ProjectDir)\Release\SDL.dll" "C:\Program Files (x86)\Steam\steamapps\common\Cogmind"</Command>
+    </PostBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="..\..\src\audio\disk\SDL_diskaudio.h" />
