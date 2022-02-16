@@ -29,6 +29,22 @@
 #include <immintrin.h>
 //#include <x86intrin.h>
 
+// Intrinsic detection support
+#ifdef _MSC_VER
+
+//  Windows
+#define cpuid(info, x)    __cpuidex(info, x, 0)
+
+#else
+
+//  GCC Intrinsics
+#include <cpuid.h>
+void cpuid(int info[4], int InfoType){
+    __cpuid_count(InfoType, 0, info[0], info[1], info[2], info[3]);
+}
+
+#endif
+
 /*
   In Visual C, VC6 has mmintrin.h in the "Processor Pack" add-on.
    Checking if _mm_free is #defined in malloc.h is is the only way to
@@ -2672,6 +2688,18 @@ static void BlitNtoNSurfaceAlphaKey(SDL_BlitInfo *info)
 	}
 }
 
+int checkHasAVX2() {
+	int info[4];
+	cpuid(info, 0);
+	int nIds = info[0];
+
+	if (nIds >= 0x00000007){
+		cpuid(info, 0x00000007);
+		return (info[1] & ((int)1 <<  5)) != 0;
+	}
+	return 0;
+}
+
 __m128i argbToABGRx4(__m128i colors) {
 	__m128i b = _mm_set_epi8(15, 12, 13, 14, 11, 8, 9, 10, 7, 4, 5, 6, 3, 0, 1, 2);
 
@@ -2736,8 +2764,7 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 	int  srcbpp;
 	int  dstbpp;
 	if(hasAVX2 == -1) {
-        //__builtin_cpu_init();
-		//hasAVX2 = __builtin_cpu_supports("avx2");
+		hasAVX2 = checkHasAVX2();
 	}
 
 	/* Set up some basic variables */
@@ -2748,16 +2775,19 @@ static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
 		while ( height-- ) {
 			int x = 0;
 
-			// Copy pixels in 4-wide blocks
-			for (; x + 4 <= width; x += 4) {
-				__m128i c_src = argbToABGRx4(_mm_loadu_si128((__m128i*) src));
-				__m128i c_dst = _mm_loadu_si128((__m128i*) dst);
+			// Only supported on platforms with AVX2
+			if(hasAVX2) {
+				// Copy pixels in 4-wide blocks
+				for (; x + 4 <= width; x += 4) {
+					__m128i c_src = argbToABGRx4(_mm_loadu_si128((__m128i*) src));
+					__m128i c_dst = _mm_loadu_si128((__m128i*) dst);
 
-				__m128i c_mix = MixRGBA_AVX2(c_src, c_dst);
-				_mm_storeu_si128((__m128i*) dst, c_mix);
+					__m128i c_mix = MixRGBA_AVX2(c_src, c_dst);
+					_mm_storeu_si128((__m128i*) dst, c_mix);
 
-				src += 16;
-				dst += 16;
+					src += 16;
+					dst += 16;
+				}
 			}
 
 			// Copy pixels in 2-wide blocks
