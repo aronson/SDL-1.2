@@ -6,7 +6,7 @@ It promises up to 100-500% speedups on modern systems over the retail build ship
 
 Compiling on Windows
 --
-Open the VisualC/SDL.sln file in at least VS2017. Tested on VS2017 and VS2022. You need the Windows SDK and C++ Desktop development components. You may need the Universal C Runtime SDK and UCRT as well.
+Open the VisualC/SDL.sln file in at least VS2017. Tested on VS2017 and VS2022. You need the Windows SDK and C++ Desktop development components. You may need the Universal C Runtime SDK and UCRT as well. You may need the DirectX 9 SDK.
 
 **WARNING:** There is a post-build step that will attempt to copy the outputted SDL.dll to `C:\Program Files (x86)\Steam\steamapps\common\Cogmind\SDL.dll`.
 
