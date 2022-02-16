@@ -30,5 +30,5 @@ Current Features
 --
 - SSE4.1 compatible 2-pixel-wide alpha blending software blitting routine -- [JellySquid](https://github.com/jellysquid3)
 - AVX2 compatible 4-pixel-wide routine of the same kind -- JellySquid
-- ARGB to AGRB SSE3 compatible color-shift function for proper rendering -- [Luigi](https://github.com/aronson/), Pablo, SuperCoder76
+- ARGB to AGRB SSE3 compatible color-shift function for proper rendering -- [Luigi](https://github.com/aronson/), Pablo, [SuperCoder79](https://github.com/SuperCoder7979)
 - SDL_FreeWav patch to address undefined behavior in Cogmind at runtime for MSVC builds -- Luigi
