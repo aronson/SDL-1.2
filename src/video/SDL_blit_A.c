@@ -2701,8 +2701,9 @@ int checkHasAVX2() {
 }
 
 __m128i argbToABGRx4(__m128i colors) {
+	// Flip the 8 bit channels we care about, otherwise a pass-through mask
 	__m128i b = _mm_set_epi8(15, 12, 13, 14, 11, 8, 9, 10, 7, 4, 5, 6, 3, 0, 1, 2);
-
+	// Do the shuffle! Colors are now in the right place for outputting to the screen
 	return  _mm_shuffle_epi8(colors, b);
 }
 
@@ -2710,42 +2711,65 @@ __m128i argbToABGRx4(__m128i colors) {
 __attribute__((target ("avx2")))
 #endif
 __m128i MixRGBA_AVX2(__m128i src, __m128i dst) {
+	// Unpack 4 32-bit ARGB 8 bit elements into a vector of 256 bits wide
+	// Comprised of the upper part of a 16 bit integer set to blank, lower set to 8 bit value
     __m256i src_color = _mm256_cvtepu8_epi16(src);
+	// Unpack 4 32-bit ARGB 8 bit elements into a vector of 256 bits wide
     __m256i dst_color = _mm256_cvtepu8_epi16(dst);
+    // We can ignore the high bits (-1) because of our extended vector packing
+    // We instead select the subcomponent of the source vector for each of the 4 pixels for each channel
     const __m256i SHUFFLE_ALPHA = _mm256_set_epi8(
             -1, 30, -1, 30, -1, 30, -1, 30,
             -1, 22, -1, 22, -1, 22, -1, 22,
             -1, 14, -1, 14, -1, 14, -1, 14,
             -1,  6, -1,  6, -1,  6, -1,  6);
+    // Calling the shuffle routine, we pull out corresponding duplicates of the alpha value for other channels
     __m256i alpha = _mm256_shuffle_epi8(src_color, SHUFFLE_ALPHA);
+    // Subtract src colors from destination colors to reason with the actual difference the alpha may convey upon the destination
     __m256i sub = _mm256_sub_epi16(src_color, dst_color);
+    // Change this difference based on the intensity of alpha through a multiply operation that will result in wide integers
     __m256i mul = _mm256_mullo_epi16(sub, alpha);
+    // Take the lower components?? I don't get this at all
     const __m256i SHUFFLE_REDUCE = _mm256_set_epi8(
             -1, -1, -1, -1, -1, -1, -1, -1,
             31, 29, 27, 25, 23, 21, 19, 17,
             -1, -1, -1, -1, -1, -1, -1, -1,
             15, 13, 11,  9,  7,  5,  3,  1);
+    // Somehow the numbers are small again
     __m256i reduced = _mm256_shuffle_epi8(mul, SHUFFLE_REDUCE);
+    // I don't even know anymore
     __m256i packed = _mm256_permute4x64_epi64(reduced, _MM_SHUFFLE(3, 1, 2, 0));
+    // Return something only 128 bits wide
     return _mm_add_epi8(_mm256_castsi256_si128(packed), dst);
 }
 
 __m128i MixRGBA_SSE41(__m128i src, __m128i dst) {
+	// Unpack 2 32-bit ARGB 8 bit elements into a vector of 128 bits wide
 	__m128i src_color = _mm_cvtepu8_epi16(src);
+	// Unpack 2 32-bit ARGB 8 bit elements into a vector of 128 bits wide
 	__m128i dst_color = _mm_cvtepu8_epi16(dst);
 	
+	// The alpha mask will take only those members of the 8 bit packed vector and choose the alpha component
     const __m128i SHUFFLE_ALPHA = _mm_set_epi8(-1, 7, -1, 7, -1, 7, -1, 7, -1, 3, -1, 3, -1, 3, -1, 3);
+    // This extracts 4 x 2 copies of the alpha channel relevant to each 8 bit so we can place them next to each other
 	__m128i alpha = _mm_shuffle_epi8(src, SHUFFLE_ALPHA);
 	
+	// This subtracts the src color from the destination color to find the difference the alpha channel represents
+	// The subtraction happens on 16-bit integers?
 	__m128i sub = _mm_sub_epi16(src_color, dst_color);
+	// This sets the relative intensity of the subtracted difference of each channel element against the desired alpha intensity
+	// We are going to take the low bits of the of intermediate integers, because alpha was in the lower section of our shuffle
 	__m128i mul = _mm_mullo_epi16(sub, alpha);
 
+	// This takes only the high components of the set of 8 sub-channels? Why are there sixteen? I don't quite get it
 	const __m128i SHUFFLE_REDUCE = _mm_set_epi8(
 	        31, 29, 27, 25, 23, 21, 19, 17,
 	        15, 13, 11,  9,  7,  5,  3,  1);
 	
+	// Somehow it still fits in a 128 wide register
 	__m128i reduced = _mm_shuffle_epi8(mul, SHUFFLE_REDUCE);
 	
+	// return the result of adding the reduced set of differences from source with awareness of alpha to our destination rect
 	return _mm_add_epi8(reduced, dst);
 }
 
