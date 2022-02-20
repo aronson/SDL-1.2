@@ -18,7 +18,7 @@ Cogmind is a Win32 application. Install a mingw toolchain for i686. I suggest MS
 git clone git@github.com:aronson/SDL-1.2.git
 cd SDL-1.2
 ./autogen.sh
-CFLAGS="-msse4.1 -m32" LDFLAGS="-static-libgcc -lwinpthread" ./configure --disable-assembly --host=i686-w64-mingw32 --build=x86_64-w64-mingw32
+CFLAGS="-msse4.1 -m32" LDFLAGS="-static-libgcc -lwinpthread" ./configure --disable-assembly --host=i686-w64-mingw32 --build=x86_64-w64-mingw32 --disable-directx
 make
 ```
 
