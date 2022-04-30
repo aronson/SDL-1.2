@@ -21,6 +21,11 @@ cd SDL-1.2
 CFLAGS="-msse4.1 -m32" LDFLAGS="-static-libgcc -lwinpthread" ./configure --disable-assembly --host=i686-w64-mingw32 --build=x86_64-w64-mingw32 --disable-directx
 make
 ```
+On macOS one can also use clang with the mingw compiler
+```
+LDFLAGS="-shared -static -lpthread" CC="clang -Ofast -static-libgcc -static-libstdc++ -msse4.1 -target i686-w64-mingw32 --sysroot=/opt/homebrew/Cellar/mingw-w64/10.0.0_1/toolchain-i686/" CXX="clang++ -Ofast -static-libgcc -static-libstdc++ -msse4.1 -target i686-w64-mingw32 --sysroot=/opt/homebrew/Cellar/mingw-w64/10.0.0_1/toolchain-i686/" MACOSX_DEPLOYMENT_TARGET=10.14 ./configure --host=i686-w64-mingw32 --disable-directx --disable-assembly
+...
+```
 
 Output is in `build/.libs/SDL.dll`.
 
