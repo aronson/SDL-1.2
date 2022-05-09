@@ -23,7 +23,7 @@ make
 ```
 On ARM-based macOS there is a bug in the mingw compiler. One can also use clang with the mingw toolchain instead to compile with no bugs:
 ```
-LDFLAGS="-shared -static -lpthread" CC="clang -Ofast -static-libgcc -static-libstdc++ -msse4.1 -target i686-w64-mingw32 --sysroot=/opt/homebrew/Cellar/mingw-w64/10.0.0_1/toolchain-i686/" CXX="clang++ -Ofast -static-libgcc -static-libstdc++ -msse4.1 -target i686-w64-mingw32 --sysroot=/opt/homebrew/Cellar/mingw-w64/10.0.0_1/toolchain-i686/" MACOSX_DEPLOYMENT_TARGET=10.14 ./configure --host=i686-w64-mingw32 --disable-directx --disable-assembly
+WINDRES="i686-w64-mingw32-windres" LDFLAGS="-shared -static -lpthread" CC="/opt/homebrew/Cellar/llvm/13.0.1_1/bin/clang -static-libgcc -static-libstdc++ -msse4.1 -target i686-w64-mingw32 --sysroot=/opt/homebrew/Cellar/mingw-w64/10.0.0_1/toolchain-i686/ -Ofast" ./configure --host=i686-w64-mingw32 --disable-directx --disable-assembly
 ...
 ```
 
