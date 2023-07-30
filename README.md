@@ -2,18 +2,18 @@ Cogmind Performance Mod Fork
 ==
 This project is a fork of the **deprecated** [Simple Directmedia Layer 1.2 project](https://github.com/libsdl-org/SDL-1.2). It has changes and bugfixes specific to the delightful roguelike [Cogmind](https://gridsagegames.com/cogmind/).
 
-It promises up to 100-500% speedups on modern systems over the retail build shipped with the game. The effect is most noticable when the engine is under stress, by panning the map or in combat with multiple enemies.
+It promises up to 100-500% speedups on modern systems over the retail build shipped with the game. The effect is most noticable when the engine is under stress: e.g. panning the map, win animations, or large-scale combat.
 
 Compiling on Windows
 --
-Open the VisualC/SDL.sln file in at least VS2017. Tested on VS2017 and VS2022. You need the Windows SDK and C++ Desktop development components. You may need the Universal C Runtime SDK and UCRT as well. You may need the DirectX 9 SDK.
+Open the VisualC/SDL.sln file in at least VS2017. Tested on VS2017 and VS2022. You need the Windows SDK and C++ Desktop development components. You may need the DirectX 9+ SDK depending on what configuration you choose to build.
 
 **WARNING:** There is a post-build step that will attempt to copy the outputted SDL.dll to `C:\Program Files (x86)\Steam\steamapps\common\Cogmind\SDL.dll`.
 
 Compiling on Linux/macOS
 --
 
-Cogmind is a Win32 application. Install a mingw toolchain for i686. I suggest MSYS2. You wll need to use `make`, there is no `CMake` support at this time.
+Cogmind is a Win32 application. Install a mingw toolchain with i686 support. You wll need to use `make`, there is no `CMake` support at this time.
 ```
 git clone git@github.com:aronson/SDL-1.2.git
 cd SDL-1.2
