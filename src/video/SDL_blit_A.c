@@ -2787,112 +2787,92 @@ __m128i MixRGBA_SSE41(__m128i src, __m128i dst) {
 			15, 13, 11,  9,  7,  5,  3,  1);
 	__m128i reduced = _mm_shuffle_epi8(mul, SHUFFLE_REDUCE);
 	
-	// return the result of adding the reduced set of differences from source with awareness of alpha to our destination rect
+	// Return the result of adding the reduced set of differences to the destination rect
 	return _mm_add_epi8(reduced, dst);
 }
 
 static int hasAVX2 = -1;
 
+
+int processPixels_AVX2(int width, Uint8** src, Uint8** dst) {
+	int x = 0;
+	for (; x + 4 <= width; x += 4) {
+		__m128i c_src = argbToABGRx4(_mm_loadu_si128((__m128i*) *src));
+		__m128i c_dst = _mm_loadu_si128((__m128i*) *dst);
+
+		__m128i c_mix = MixRGBA_AVX2(c_src, c_dst);
+		_mm_storeu_si128((__m128i*) *dst, c_mix);
+
+		*src += 16;
+		*dst += 16;
+	}
+	return x;
+}
+
+int processPixels_SSE41(int width, int x, Uint8** src, Uint8** dst) {
+	for (; x + 2 <= width; x += 2) {
+		__m128i c_src = argbToABGRx4(_mm_loadu_si64(*src));
+		__m128i c_dst = _mm_loadu_si64(*dst);
+
+		__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
+		_mm_storeu_si64(*dst, c_mix);
+
+		*src += 8;
+		*dst += 8;
+	}
+	return x;
+}
+
+void processRemainingPixels(int width, int x, Uint8** src, Uint8** dst) {
+	for (; x < width; x++) {
+		__m128i c_src = argbToABGRx4(_mm_loadu_si32(*src));
+		__m128i c_dst = _mm_loadu_si32(*dst);
+
+		__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
+		_mm_storeu_si32(*dst, c_mix);
+
+		*src += 4;
+		*dst += 4;
+	}
+}
+
 /* General (slow) N->N blending with pixel alpha */
-static void BlitNtoNPixelAlpha(SDL_BlitInfo *info)
-{
+void BlitNtoNPixelAlpha(SDL_BlitInfo *info) {
 	int width = info->d_width;
 	int height = info->d_height;
-	Uint8 *src = info->s_pixels;
+	Uint8* src = info->s_pixels;
 	int srcskip = info->s_skip;
-	Uint8 *dst = info->d_pixels;
+	Uint8* dst = info->d_pixels;
 	int dstskip = info->d_skip;
-	SDL_PixelFormat *srcfmt = info->src;
-	SDL_PixelFormat *dstfmt = info->dst;
+	SDL_PixelFormat* srcfmt = info->src;
+	SDL_PixelFormat* dstfmt = info->dst;
 
-	int  srcbpp;
-	int  dstbpp;
-	if(hasAVX2 == -1) {
+	int  srcbpp = srcfmt->BytesPerPixel;
+	int  dstbpp = dstfmt->BytesPerPixel;
+	if (hasAVX2 == -1) {
 		hasAVX2 = checkHasAVX2();
 	}
 
-	/* Set up some basic variables */
-	srcbpp = srcfmt->BytesPerPixel;
-	dstbpp = dstfmt->BytesPerPixel;
-
 	if (srcbpp == 4 && dstbpp == 4) {
-		while ( height-- ) {
+		while (height--) {
 			int x = 0;
 
-			// Only supported on platforms with AVX2
-			if(hasAVX2) {
-				// Copy pixels in 4-wide blocks
-				for (; x + 4 <= width; x += 4) {
-					__m128i c_src = argbToABGRx4(_mm_loadu_si128((__m128i*) src));
-					__m128i c_dst = _mm_loadu_si128((__m128i*) dst);
-
-					__m128i c_mix = MixRGBA_AVX2(c_src, c_dst);
-					_mm_storeu_si128((__m128i*) dst, c_mix);
-
-					src += 16;
-					dst += 16;
-				}
+			// Use AVX2 implementation for 4-wide blocks if available
+			if (hasAVX2) {
+				x = processPixels_AVX2(width, &src, &dst);
 			}
 
-			// Copy pixels in 2-wide blocks
-			for (; x + 2 <= width; x += 2) {
-				__m128i c_src = argbToABGRx4(_mm_loadu_si64(src));
-				__m128i c_dst = _mm_loadu_si64(dst);
+			// Use SSE4.1 implementation for 2-wide blocks
+			x = processPixels_SSE41(width, x, &src, &dst);
 
-				__m128i c_mix = (MixRGBA_SSE41(c_src, c_dst));
-				_mm_storeu_si64(dst, c_mix);
-
-				src += 8;
-				dst += 8;
-			}
-
-			// Copy remaining pixel
-			for (; x < width; x++) {
-				__m128i c_src = argbToABGRx4(_mm_loadu_si32(src));
-				__m128i c_dst = _mm_loadu_si32(dst);
-
-				__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
-				_mm_storeu_si32(dst, c_mix);
-
-				src += 4;
-				dst += 4;
-			}
+			// Process remaining pixels
+			processRemainingPixels(width, x, &src, &dst);
 
 			src += srcskip;
 			dst += dstskip;
 		}
 
 		return;
-	}
-	/* FIXME: for 8bpp source alpha, this doesn't get opaque values
-	   quite right. for <8bpp source alpha, it gets them very wrong
-	   (check all macros!)
-	   It is unclear whether there is a good general solution that doesn't
-	   need a branch (or a divide). */
-	while ( height-- ) {
-	    DUFFS_LOOP4(
-	    {
-		Uint32 Pixel;
-		unsigned sR;
-		unsigned sG;
-		unsigned sB;
-		unsigned dR;
-		unsigned dG;
-		unsigned dB;
-		unsigned sA;
-		unsigned dA;
-		DISEMBLE_RGBA(src, srcbpp, srcfmt, Pixel, sR, sG, sB, sA);
-		if(sA) {
-		  DISEMBLE_RGBA(dst, dstbpp, dstfmt, Pixel, dR, dG, dB, dA);
-		  ALPHA_BLEND(sR, sG, sB, sA, dR, dG, dB);
-		  ASSEMBLE_RGBA(dst, dstbpp, dstfmt, dR, dG, dB, dA);
-		}
-		src += srcbpp;
-		dst += dstbpp;
-	    },
-	    width);
-	    src += srcskip;
-	    dst += dstskip;
 	}
 }
 
