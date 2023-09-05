@@ -2688,27 +2688,154 @@ static void BlitNtoNSurfaceAlphaKey(SDL_BlitInfo *info)
 	}
 }
 
-int checkHasAVX2() {
-	int info[4];
-	cpuid(info, 0);
-	int nIds = info[0];
+static int hasAVX2 = -1;
+static int hasSSE4_1 = -1;
 
-	if (nIds >= 0x00000007){
-		cpuid(info, 0x00000007);
-		return (info[1] & ((int)1 <<  5)) != 0;
-	}
-	return 0;
+/**
+ * Using the SSE4.1 instruction set, blit four pixels with JellySquid's alpha blending routine.
+ * @param src A pointer to two 32-bit pixels of ARGB format to blit into dst
+ * @param dst A pointer to two 32-bit pixels of ARGB format to retain visual data for while alpha blending
+ * @return A 128-bit wide vector of two alpha-blended pixels in ARGB format
+ */
+__m128i MixRGBA_SSE4_1(__m128i src, __m128i dst) {
+	// Unpack 2 32-bit ARGB 8 bit elements into a vector of 128 bits wide
+	__m128i src_color = _mm_cvtepu8_epi16(src);
+	// Similarly unpack the pixels currently in the screen buffer
+	__m128i dst_color = _mm_cvtepu8_epi16(dst);
+	/**
+	 * Combines a shuffle and an _mm_cvtepu8_epi16 operation into one operation by moving the lower 8 bits of the alpha
+	 * channel around to create 16-bit integers.
+	 */
+	const __m128i SHUFFLE_ALPHA = _mm_set_epi8(
+		-1, 7, -1, 7, -1, 7, -1, 7,
+		-1, 3, -1, 3, -1, 3, -1, 3);
+	// This extracts 4 x 2 copies of the alpha channel relevant to each 8bit so we can place them next to each other
+	__m128i alpha = _mm_shuffle_epi8(src, SHUFFLE_ALPHA);
+	// This subtracts the src color from the destination color to find the difference the alpha channel represents
+	// The subtraction happens on 16-bit integers?
+	__m128i sub = _mm_sub_epi16(src_color, dst_color);
+	// This sets the relative intensity of the subtracted difference of each channel element against the desired alpha intensity
+	// We are going to take the low bits of the of intermediate integers, because alpha was in the lower section of our shuffle
+	__m128i mul = _mm_mullo_epi16(sub, alpha);
+	// In the second row of this constant, we take the lower 8 bits of each packed 16-bit integer in the vector, and
+	// pack them into 8-bit integers.
+	const __m128i SHUFFLE_REDUCE = _mm_set_epi8(
+		-1, -1, -1, -1, -1, -1, -1, -1,
+		15, 13, 11, 9, 7, 5, 3, 1);
+	__m128i reduced = _mm_shuffle_epi8(mul, SHUFFLE_REDUCE);
+
+	// Return the result of adding the reduced set of differences to the destination rect
+	return _mm_add_epi8(reduced, dst);
 }
 
-__m128i argbToABGRx4(__m128i colors) {
-	// Flip the 8 bit channels we care about, otherwise a pass-through mask
-	__m128i b = _mm_set_epi8(15, 12, 13, 14, 11, 8, 9, 10, 7, 4, 5, 6, 3, 0, 1, 2);
-	// Do the shuffle! Colors are now in the right place for outputting to the screen
-	return  _mm_shuffle_epi8(colors, b);
+Uint32 convertPixelFormat(Uint32 color, const SDL_PixelFormat* srcFormat) {
+	Uint8 a = (color >> srcFormat->Ashift) & 0xFF;
+	Uint8 r = (color >> srcFormat->Rshift) & 0xFF;
+	Uint8 g = (color >> srcFormat->Gshift) & 0xFF;
+	Uint8 b = (color >> srcFormat->Bshift) & 0xFF;
+
+	return (a << 24) | (r << 16) | (g << 8) | b;
 }
 
 #ifndef _MSC_VER
-__attribute__((target ("avx2")))
+__attribute__((target("sse4.1")))
+#endif
+/*
+ * This helper function converts arbitrary pixel format data into ARGB form with a 4 pixel-wide shuffle
+ */
+	__m128i convertPixelFormatsx4(__m128i colors, const SDL_PixelFormat* srcFormat) {
+	// Create shuffle masks based on the source SDL_PixelFormat to ARGB
+	__m128i srcShuffleMask = _mm_set_epi8(
+		srcFormat->Ashift / 8 + 12, srcFormat->Rshift / 8 + 12, srcFormat->Gshift / 8 + 12, srcFormat->Bshift / 8 + 12,
+		srcFormat->Ashift / 8 + 8, srcFormat->Rshift / 8 + 8, srcFormat->Gshift / 8 + 8, srcFormat->Bshift / 8 + 8,
+		srcFormat->Ashift / 8 + 4, srcFormat->Rshift / 8 + 4, srcFormat->Gshift / 8 + 4, srcFormat->Bshift / 8 + 4,
+		srcFormat->Ashift / 8, srcFormat->Rshift / 8, srcFormat->Gshift / 8, srcFormat->Bshift / 8
+	);
+
+	// Shuffle the colors
+	return _mm_shuffle_epi8(colors, srcShuffleMask);
+}
+
+#ifndef _MSC_VER
+__attribute__((target("sse4.1")))
+#endif
+void BlitNtoNPixelAlpha_SSE4_1(SDL_BlitInfo* info) {
+	int width = info->d_width;
+	int height = info->d_height;
+	Uint8* src = info->s_pixels;
+	int srcskip = info->s_skip;
+	Uint8* dst = info->d_pixels;
+	int dstskip = info->d_skip;
+	SDL_PixelFormat* srcfmt = info->src;
+	SDL_PixelFormat* dstfmt = info->dst;
+
+	int  srcbpp = srcfmt->BytesPerPixel;
+	int  dstbpp = dstfmt->BytesPerPixel;
+
+	int chunks = width / 4;
+	Uint8* buffer = (Uint8*)SDL_malloc(chunks * 16 * sizeof(Uint8));
+
+	while (height--) {
+		/* Process 4-wide chunks of source color data that may be in wrong format into buffer */
+		for (int i = 0; i < chunks; i += 1) {
+			__m128i colors = _mm_loadu_si128((__m128i*)(src + i * 16));
+			_mm_storeu_si128((__m128i*)(buffer + i * 16), convertPixelFormatsx4(colors, srcfmt));
+		}
+
+		/* Alpha-blend in 2-wide chunks from buffer into destination */
+		for (int i = 0; i < chunks * 2; i += 1) {
+			__m128i c_src = _mm_loadu_si64((buffer + (i * 8)));
+			__m128i c_dst = _mm_loadu_si64((dst + i * 8));
+			__m128i c_mix = MixRGBA_SSE4_1(c_src, c_dst);
+			_mm_storeu_si64(dst + i * 8, c_mix);
+		}
+
+		/* Handle remaining pixels when width is not a multiple of 4 */
+		if (width % 4 != 0) {
+			int remaining_pixels = width % 4;
+			int offset = width - remaining_pixels;
+			if (remaining_pixels >= 2) {
+				Uint32* src_ptr = ((Uint32*)(src + (offset * 4)));
+				Uint32* dst_ptr = ((Uint32*)(dst + (offset * 4)));
+				__m128i c_src = _mm_loadu_si64(src_ptr);
+				__m128i c_dst;
+				__m128i c_mix;
+				c_src = convertPixelFormatsx4(c_src, srcfmt);
+				c_dst = _mm_loadu_si64(dst_ptr);
+				c_mix = MixRGBA_SSE4_1(c_src, c_dst);
+				_mm_storeu_si64(dst_ptr, c_mix);
+				remaining_pixels -= 2;
+				offset += 2;
+			}
+			if (remaining_pixels == 1) {
+				Uint32* src_ptr = ((Uint32*)(src + (offset * 4)));
+				Uint32* dst_ptr = ((Uint32*)(dst + (offset * 4)));
+				Uint32 pixel = convertPixelFormat(*src_ptr, srcfmt);
+				/* Old GCC has bad or no _mm_loadu_si32 */
+#if defined(__GNUC__) && (__GNUC__ < 11)
+				__m128i c_src = _mm_set_epi32(0, 0, 0, pixel);
+				__m128i c_dst = _mm_set_epi32(0, 0, 0, *dst_ptr);
+#else
+				__m128i c_src = _mm_loadu_si32(&pixel);
+				__m128i c_dst = _mm_loadu_si32(dst_ptr);
+#endif
+				__m128i mixed_pixel = MixRGBA_SSE4_1(c_src, c_dst);
+				_mm_storeu_si32(dst_ptr, mixed_pixel);
+			}
+		}
+
+		src += 4 * width;
+		dst += 4 * width;
+
+		src += srcskip;
+		dst += dstskip;
+	}
+
+	SDL_free(buffer);
+}
+
+#ifndef _MSC_VER
+__attribute__((target("avx2")))
 #endif
 /**
  * Using the AVX2 instruction set, blit eight pixels with JellySquid's alpha blending routine.
@@ -2725,10 +2852,10 @@ __m128i MixRGBA_AVX2(__m128i src, __m128i dst) {
 	// We can ignore the high bits (-1) because of our extended vector packing
 	// We instead select the subcomponent of the source vector for each of the 4 pixels for each channel
 	const __m256i SHUFFLE_ALPHA = _mm256_set_epi8(
-			-1, 30, -1, 30, -1, 30, -1, 30,
-			-1, 22, -1, 22, -1, 22, -1, 22,
-			-1, 14, -1, 14, -1, 14, -1, 14,
-			-1,  6, -1,  6, -1,  6, -1,  6);
+		-1, 30, -1, 30, -1, 30, -1, 30,
+		-1, 22, -1, 22, -1, 22, -1, 22,
+		-1, 14, -1, 14, -1, 14, -1, 14,
+		-1, 6, -1, 6, -1, 6, -1, 6);
 	// Calling the shuffle routine, we pull out corresponding duplicates of the alpha value for other channels
 	__m256i alpha = _mm256_shuffle_epi8(src_color, SHUFFLE_ALPHA);
 	// Subtract src colors from destination colors to reason with the actual difference the alpha may convey upon the destination
@@ -2741,10 +2868,10 @@ __m128i MixRGBA_AVX2(__m128i src, __m128i dst) {
 	 * put them into the correct order for transport back to the surface as SDL expects.
 	 */
 	const __m256i SHUFFLE_REDUCE = _mm256_set_epi8(
-			-1, -1, -1, -1, -1, -1, -1, -1,
-			31, 29, 27, 25, 23, 21, 19, 17,
-			-1, -1, -1, -1, -1, -1, -1, -1,
-			15, 13, 11,  9,  7,  5,  3,  1);
+		-1, -1, -1, -1, -1, -1, -1, -1,
+		31, 29, 27, 25, 23, 21, 19, 17,
+		-1, -1, -1, -1, -1, -1, -1, -1,
+		15, 13, 11, 9, 7, 5, 3, 1);
 	__m256i reduced = _mm256_shuffle_epi8(mul, SHUFFLE_REDUCE);
 	__m256i packed = _mm256_permute4x64_epi64(reduced, _MM_SHUFFLE(3, 1, 2, 0));
 	// Take the lower 128 bits of the packed 256-bit vector to reduce it back to a 128-bit register
@@ -2753,87 +2880,87 @@ __m128i MixRGBA_AVX2(__m128i src, __m128i dst) {
 	return _mm_add_epi8(mix, dst);
 }
 
-/**
- * Using the SSE4.1 instruction set, blit four pixels with JellySquid's alpha blending routine.
- * @param src A pointer to two 32-bit pixels of ARGB format to blit into dst
- * @param dst A pointer to two 32-bit pixels of ARGB format to retain visual data for while alpha blending
- * @return A 128-bit wide vector of two alpha-blended pixels in ARGB format
- */
-__m128i MixRGBA_SSE41(__m128i src, __m128i dst) {
-	// Unpack 2 32-bit ARGB 8 bit elements into a vector of 128 bits wide
-	__m128i src_color = _mm_cvtepu8_epi16(src);
-	// Similarly unpack the pixels currently in the screen buffer
-	__m128i dst_color = _mm_cvtepu8_epi16(dst);
-	/**
-	 * Combines a shuffle and an _mm_cvtepu8_epi16 operation into one operation by moving the lower 8 bits of the alpha
-	 * channel around to create 16-bit integers.
-	 */
-	// TODO: Instead, shuffle the 16-bit integers in src to save register space and make the code easier to read
-	const __m128i SHUFFLE_ALPHA = _mm_set_epi8(
-			-1, 7, -1, 7, -1, 7, -1, 7,
-			-1, 3, -1, 3, -1, 3, -1, 3);
-	// This extracts 4 x 2 copies of the alpha channel relevant to each 8bit so we can place them next to each other
-	__m128i alpha = _mm_shuffle_epi8(src, SHUFFLE_ALPHA);
-	// This subtracts the src color from the destination color to find the difference the alpha channel represents
-	// The subtraction happens on 16-bit integers?
-	__m128i sub = _mm_sub_epi16(src_color, dst_color);
-	// This sets the relative intensity of the subtracted difference of each channel element against the desired alpha intensity
-	// We are going to take the low bits of the of intermediate integers, because alpha was in the lower section of our shuffle
-	__m128i mul = _mm_mullo_epi16(sub, alpha);
-	// In the second row of this constant, we take the lower 8 bits of each packed 16-bit integer in the vector, and
-	// pack them into 8-bit integers.
-	const __m128i SHUFFLE_REDUCE = _mm_set_epi8(
-			-1, -1, -1, -1, -1, -1, -1, -1,
-			15, 13, 11,  9,  7,  5,  3,  1);
-	__m128i reduced = _mm_shuffle_epi8(mul, SHUFFLE_REDUCE);
-	
-	// Return the result of adding the reduced set of differences to the destination rect
-	return _mm_add_epi8(reduced, dst);
+void BlitNtoNPixelAlpha_AVX2(SDL_BlitInfo* info)
+{
+	int width = info->d_width;
+	int height = info->d_height;
+	Uint8* src = info->s_pixels;
+	int srcskip = info->s_skip;
+	Uint8* dst = info->d_pixels;
+	int dstskip = info->d_skip;
+	SDL_PixelFormat* srcfmt = info->src;
+	SDL_PixelFormat* dstfmt = info->dst;
+
+	int chunks = width / 4;
+	Uint8* buf = SDL_malloc(sizeof(Uint8) * chunks * 16);
+
+	while (height--) {
+		/* Process 4-wide chunks of source color data that may be in wrong format */
+		for (int i = 0; i < chunks; i += 1) {
+			__m128i c_src = convertPixelFormatsx4(_mm_loadu_si128((__m128i*) (src + i * 16)), srcfmt);
+			_mm_store_si128((__m128i*)(buf + i * 16), c_src);
+		}
+
+		/* Alpha-blend in 4-wide chunk from src into destination */
+		for (int i = 0; i < chunks; i += 1) {
+			__m128i c_src = _mm_loadu_si128((__m128i*) (buf + i * 16));
+			__m128i c_dst = _mm_loadu_si128((__m128i*) (dst + i * 16));
+			__m128i c_mix = MixRGBA_AVX2(c_src, c_dst);
+			_mm_storeu_si128((__m128i*) (dst + i * 16), c_mix);
+		}
+
+		/* Handle remaining pixels when width is not a multiple of 4 */
+		if (width % 4 != 0) {
+			int remaining_pixels = width % 4;
+			int offset = width - remaining_pixels;
+			if (remaining_pixels >= 2) {
+				Uint32* src_ptr = ((Uint32*)(src + (offset * 4)));
+				Uint32* dst_ptr = ((Uint32*)(dst + (offset * 4)));
+				__m128i c_src = _mm_loadu_si64(src_ptr);
+				c_src = convertPixelFormatsx4(c_src, srcfmt);
+				__m128i c_dst = _mm_loadu_si64(dst_ptr);
+				__m128i c_mix = MixRGBA_SSE4_1(c_src, c_dst);
+				_mm_storeu_si64(dst_ptr, c_mix);
+				remaining_pixels -= 2;
+				offset += 2;
+			}
+			if (remaining_pixels == 1) {
+				Uint32* src_ptr = ((Uint32*)(src + (offset * 4)));
+				Uint32* dst_ptr = ((Uint32*)(dst + (offset * 4)));
+				Uint32 pixel = convertPixelFormat(*src_ptr, srcfmt);
+				/* Old GCC has bad or no _mm_loadu_si32 */
+#if defined(__GNUC__) && (__GNUC__ < 11)
+				__m128i c_src = _mm_set_epi32(0, 0, 0, pixel);
+				__m128i c_dst = _mm_set_epi32(0, 0, 0, *dst_ptr);
+#else
+				__m128i c_src = _mm_loadu_si32(&pixel);
+				__m128i c_dst = _mm_loadu_si32(dst_ptr);
+#endif
+				__m128i mixed_pixel = MixRGBA_SSE4_1(c_src, c_dst);
+				_mm_storeu_si32(dst_ptr, mixed_pixel);
+			}
+		}
+
+		src += 4 * width;
+		dst += 4 * width;
+
+		src += srcskip;
+		dst += dstskip;
+	}
+	SDL_free(buf);
+
 }
 
-static int hasAVX2 = -1;
+int checkHasAVX2() {
+	int info[4];
+	cpuid(info, 0);
+	int nIds = info[0];
 
-
-int processPixels_AVX2(int width, Uint8** src, Uint8** dst) {
-	int x = 0;
-	for (; x + 4 <= width; x += 4) {
-		__m128i c_src = argbToABGRx4(_mm_loadu_si128((__m128i*) *src));
-		__m128i c_dst = _mm_loadu_si128((__m128i*) *dst);
-
-		__m128i c_mix = MixRGBA_AVX2(c_src, c_dst);
-		_mm_storeu_si128((__m128i*) *dst, c_mix);
-
-		*src += 16;
-		*dst += 16;
+	if (nIds >= 0x00000007) {
+		cpuid(info, 0x00000007);
+		return (info[1] & ((int)1 << 5)) != 0;
 	}
-	return x;
-}
-
-int processPixels_SSE41(int width, int x, Uint8** src, Uint8** dst) {
-	for (; x + 2 <= width; x += 2) {
-		__m128i c_src = argbToABGRx4(_mm_loadu_si64(*src));
-		__m128i c_dst = _mm_loadu_si64(*dst);
-
-		__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
-		_mm_storeu_si64(*dst, c_mix);
-
-		*src += 8;
-		*dst += 8;
-	}
-	return x;
-}
-
-void processRemainingPixels(int width, int x, Uint8** src, Uint8** dst) {
-	for (; x < width; x++) {
-		__m128i c_src = argbToABGRx4(_mm_loadu_si32(*src));
-		__m128i c_dst = _mm_loadu_si32(*dst);
-
-		__m128i c_mix = MixRGBA_SSE41(c_src, c_dst);
-		_mm_storeu_si32(*dst, c_mix);
-
-		*src += 4;
-		*dst += 4;
-	}
+	return 0;
 }
 
 /* General (slow) N->N blending with pixel alpha */
@@ -2849,30 +2976,20 @@ void BlitNtoNPixelAlpha(SDL_BlitInfo *info) {
 
 	int  srcbpp = srcfmt->BytesPerPixel;
 	int  dstbpp = dstfmt->BytesPerPixel;
-	if (hasAVX2 == -1) {
-		hasAVX2 = checkHasAVX2();
-	}
 
 	if (srcbpp == 4 && dstbpp == 4) {
-		while (height--) {
-			int x = 0;
-
-			// Use AVX2 implementation for 4-wide blocks if available
-			if (hasAVX2) {
-				x = processPixels_AVX2(width, &src, &dst);
-			}
-
-			// Use SSE4.1 implementation for 2-wide blocks
-			x = processPixels_SSE41(width, x, &src, &dst);
-
-			// Process remaining pixels
-			processRemainingPixels(width, x, &src, &dst);
-
-			src += srcskip;
-			dst += dstskip;
+		if (hasAVX2 == -1) {
+			hasAVX2 = checkHasAVX2();
+		}
+		if (hasAVX2 && srcbpp == 4 && dstbpp == 4 && width >= 4) {
+			BlitNtoNPixelAlpha_AVX2(info);
+			return;
 		}
 
-		return;
+		if (srcbpp == 4 && dstbpp == 4 && width >= 2) {
+			BlitNtoNPixelAlpha_SSE4_1(info);
+			return;
+		}
 	}
 }
 
