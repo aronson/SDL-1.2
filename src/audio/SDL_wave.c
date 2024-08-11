@@ -578,16 +578,17 @@ done:
 /* Since the WAV memory is allocated in the shared library, it must also
    be freed here.  (Necessary under Win32, VC++)
  */
+#include "Windows.h"
 void SDL_FreeWAV(Uint8 *audio_buf)
 {
 	if ( audio_buf != NULL ) {
-#if defined(_MSC_VER)
-	typedef void (*free_t)(void *);
-	free_t msvcrt_free = (free_t)(GetProcAddress(GetModuleHandle(TEXT("msvcrt")), "free"));
-	msvcrt_free(audio_buf);
-#else
+//#if defined(_MSC_VER)
+	    typedef void (*free_t)(void *);
+	    free_t msvcrt_free = (free_t)(GetProcAddress(GetModuleHandle(TEXT("msvcrt")), "free"));
+	    msvcrt_free(audio_buf);
+/*#else
 		SDL_free(audio_buf);
-#endif
+#endif*/
 	}
 }
 
