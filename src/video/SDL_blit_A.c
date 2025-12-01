@@ -2795,8 +2795,72 @@ static void Blit8888to8888PixelAlpha(SDL_BlitInfo *info)
     }
 }
 
-/* Fast 32-bit RGBA->RGB(A) blending with pixel alpha and src swizzling */
+void SDL_Get8888AlphaMaskAndShift(const SDL_PixelFormat *fmt, Uint32 *mask, Uint32 *shift)
+{
+	if (fmt->Amask) {
+		*mask = fmt->Amask;
+		*shift = fmt->Ashift;
+	} else {
+		*mask = ~(fmt->Rmask | fmt->Gmask | fmt->Bmask);
+		switch (*mask) {
+			case 0x000000FF:
+				*shift = 0;
+				break;
+			case 0x0000FF00:
+				*shift = 8;
+				break;
+			case 0x00FF0000:
+				*shift = 16;
+				break;
+			case 0xFF000000:
+				*shift = 24;
+				break;
+			default:
+				// Should never happen
+				*shift = 0;
+				break;
+		}
+	}
+}
+
+// Fast 32-bit RGBA->RGB(A) blending with pixel alpha and src swizzling
 static void Blit8888to8888PixelAlphaSwizzle(SDL_BlitInfo *info)
+{
+	int width = info->d_width;
+	int height = info->d_height;
+	Uint8* src = info->s_pixels;
+	int srcskip = info->s_skip;
+	Uint8* dst = info->d_pixels;
+	int dstskip = info->d_skip;
+	SDL_PixelFormat* srcfmt = info->src;
+	SDL_PixelFormat* dstfmt = info->dst;
+	SDL_bool fill_alpha = !dstfmt->Amask;
+	Uint32 dstAmask, dstAshift;
+
+	SDL_Get8888AlphaMaskAndShift(dstfmt, &dstAmask, &dstAshift);
+
+	while (height--) {
+		for (int i = 0; i < width; ++i) {
+			Uint32 src32 = *(Uint32 *)src;
+			Uint32 dst32 = *(Uint32 *)dst;
+			ALPHA_BLEND_SWIZZLE_8888(src32, dst32, srcfmt, dstfmt);
+			if (fill_alpha) {
+				dst32 |= dstAmask;
+			}
+			*(Uint32 *)dst = dst32;
+			src += 4;
+			dst += 4;
+		}
+
+		src += srcskip;
+		dst += dstskip;
+	}
+}
+
+#ifndef _MSC_VER
+__attribute__((target ("sse4.1")))
+#endif
+static void Blit8888to8888PixelAlphaSwizzleSSE41(SDL_BlitInfo *info)
 {
     int width = info->d_width;
     int height = info->d_height;
@@ -2806,14 +2870,86 @@ static void Blit8888to8888PixelAlphaSwizzle(SDL_BlitInfo *info)
     int dstskip = info->d_skip;
     const SDL_PixelFormat *srcfmt = info->src;
     const SDL_PixelFormat *dstfmt = info->dst;
+    SDL_bool fill_alpha = !dstfmt->Amask;
+    Uint32 dstAmask, dstAshift;
+
+    SDL_Get8888AlphaMaskAndShift(dstfmt, &dstAmask, &dstAshift);
+
+    // The byte offsets for the start of each pixel
+    const __m128i mask_offsets = _mm_set_epi8(
+        12, 12, 12, 12, 8, 8, 8, 8, 4, 4, 4, 4, 0, 0, 0, 0);
+
+    const __m128i convert_mask = _mm_add_epi32(
+        _mm_set1_epi32(
+            ((srcfmt->Rshift >> 3) << dstfmt->Rshift) |
+            ((srcfmt->Gshift >> 3) << dstfmt->Gshift) |
+            ((srcfmt->Bshift >> 3) << dstfmt->Bshift)),
+        mask_offsets);
+
+    const __m128i alpha_splat_mask = _mm_add_epi8(_mm_set1_epi8(srcfmt->Ashift >> 3), mask_offsets);
+    const __m128i alpha_fill_mask = _mm_set1_epi32((int)dstAmask);
 
     while (height--) {
         int i = 0;
+
+        for (; i + 4 <= width; i += 4) {
+            // Load 4 src pixels
+            __m128i src128 = _mm_loadu_si128((__m128i *)src);
+
+            // Load 4 dst pixels
+            __m128i dst128 = _mm_loadu_si128((__m128i *)dst);
+
+            // Extract the alpha from each pixel and splat it into all the channels
+            __m128i srcA = _mm_shuffle_epi8(src128, alpha_splat_mask);
+
+            // Convert to dst format
+            src128 = _mm_shuffle_epi8(src128, convert_mask);
+
+            // Set the alpha channels of src to 255
+            src128 = _mm_or_si128(src128, alpha_fill_mask);
+
+            // Duplicate each 8-bit alpha value into both bytes of 16-bit lanes
+            __m128i srca_lo = _mm_unpacklo_epi8(srcA, srcA);
+            __m128i srca_hi = _mm_unpackhi_epi8(srcA, srcA);
+
+            // Calculate 255-srcA in every second 8-bit lane (255-srcA = srcA^0xff)
+            srca_lo = _mm_xor_si128(srca_lo, _mm_set1_epi16(0xff00));
+            srca_hi = _mm_xor_si128(srca_hi, _mm_set1_epi16(0xff00));
+
+            // maddubs expects second argument to be signed, so subtract 128
+            src128 = _mm_sub_epi8(src128, _mm_set1_epi8((Uint8)128));
+            dst128 = _mm_sub_epi8(dst128, _mm_set1_epi8((Uint8)128));
+
+            // dst = srcA*(src-128) + (255-srcA)*(dst-128) = srcA*src + (255-srcA)*dst - 128*255
+            __m128i dst_lo = _mm_maddubs_epi16(srca_lo, _mm_unpacklo_epi8(src128, dst128));
+            __m128i dst_hi = _mm_maddubs_epi16(srca_hi, _mm_unpackhi_epi8(src128, dst128));
+
+            // dst += 0x1U (use 0x80 to round instead of floor) + 128*255 (to fix maddubs result)
+            dst_lo = _mm_add_epi16(dst_lo, _mm_set1_epi16(1 + 128 * 255));
+            dst_hi = _mm_add_epi16(dst_hi, _mm_set1_epi16(1 + 128 * 255));
+
+            // dst = (dst + (dst >> 8)) >> 8 = (dst * 257) >> 16
+            dst_lo = _mm_mulhi_epu16(dst_lo, _mm_set1_epi16(257));
+            dst_hi = _mm_mulhi_epu16(dst_hi, _mm_set1_epi16(257));
+
+            // Blend the pixels together and save the result
+            dst128 = _mm_packus_epi16(dst_lo, dst_hi);
+            if (fill_alpha) {
+                dst128 = _mm_or_si128(dst128, alpha_fill_mask);
+            }
+            _mm_storeu_si128((__m128i *)dst, dst128);
+
+            src += 16;
+            dst += 16;
+        }
 
         for (; i < width; ++i) {
             Uint32 src32 = *(Uint32 *)src;
             Uint32 dst32 = *(Uint32 *)dst;
             ALPHA_BLEND_SWIZZLE_8888(src32, dst32, srcfmt, dstfmt);
+            if (fill_alpha) {
+                dst32 |= dstAmask;
+            }
             *(Uint32 *)dst = dst32;
             src += 4;
             dst += 4;
@@ -2823,99 +2959,12 @@ static void Blit8888to8888PixelAlphaSwizzle(SDL_BlitInfo *info)
         dst += dstskip;
     }
 }
-#ifndef _MSC_VER
-__attribute__((target ("sse4.1")))
-#endif
-static void Blit8888to8888PixelAlphaSwizzleSSE41(SDL_BlitInfo *info) {
-    int width = info->d_width;
-    int height = info->d_height;
-    Uint8 *src = info->s_pixels;
-    int srcskip = info->s_skip;
-    Uint8 *dst = info->d_pixels;
-    int dstskip = info->d_skip;
-    const SDL_PixelFormat *srcfmt = info->src;
-    const SDL_PixelFormat *dstfmt = info->dst;
 
-// The byte offsets for the start of each pixel
-    const __m128i mask_offsets = _mm_set_epi8(
-            12, 12, 12, 12, 8, 8, 8, 8, 4, 4, 4, 4, 0, 0, 0, 0);
-
-    const __m128i convert_mask = _mm_add_epi32(
-            _mm_set1_epi32(
-                    ((srcfmt->Rshift >> 3) << dstfmt->Rshift) |
-                    ((srcfmt->Gshift >> 3) << dstfmt->Gshift) |
-                    ((srcfmt->Bshift >> 3) << dstfmt->Bshift)),
-            mask_offsets);
-
-    const __m128i alpha_splat_mask = _mm_add_epi8(_mm_set1_epi8(srcfmt->Ashift >> 3), mask_offsets);
-    const __m128i alpha_fill_mask = _mm_set1_epi32((int) dstfmt->Amask);
-
-    while (height--) {
-        int i = 0;
-
-        for (; i + 4 <= width; i += 4) {
-// Load 4 src pixels
-            __m128i src128 = _mm_loadu_si128((__m128i *) src);
-
-// Load 4 dst pixels
-            __m128i dst128 = _mm_loadu_si128((__m128i *) dst);
-
-// Extract the alpha from each pixel and splat it into all the channels
-            __m128i srcA = _mm_shuffle_epi8(src128, alpha_splat_mask);
-
-// Convert to dst format
-            src128 = _mm_shuffle_epi8(src128, convert_mask);
-
-// Set the alpha channels of src to 255
-            src128 = _mm_or_si128(src128, alpha_fill_mask);
-
-            __m128i src_lo = _mm_unpacklo_epi8(src128, _mm_setzero_si128());
-            __m128i src_hi = _mm_unpackhi_epi8(src128, _mm_setzero_si128());
-
-            __m128i dst_lo = _mm_unpacklo_epi8(dst128, _mm_setzero_si128());
-            __m128i dst_hi = _mm_unpackhi_epi8(dst128, _mm_setzero_si128());
-
-            __m128i srca_lo = _mm_unpacklo_epi8(srcA, _mm_setzero_si128());
-            __m128i srca_hi = _mm_unpackhi_epi8(srcA, _mm_setzero_si128());
-
-// dst = ((src - dst) * srcA) + ((dst << 8) - dst)
-            dst_lo = _mm_add_epi16(_mm_mullo_epi16(_mm_sub_epi16(src_lo, dst_lo), srca_lo),
-                                   _mm_sub_epi16(_mm_slli_epi16(dst_lo, 8), dst_lo));
-            dst_hi = _mm_add_epi16(_mm_mullo_epi16(_mm_sub_epi16(src_hi, dst_hi), srca_hi),
-                                   _mm_sub_epi16(_mm_slli_epi16(dst_hi, 8), dst_hi));
-
-// dst += 0x1U (use 0x80 to round instead of floor)
-            dst_lo = _mm_add_epi16(dst_lo, _mm_set1_epi16(1));
-            dst_hi = _mm_add_epi16(dst_hi, _mm_set1_epi16(1));
-
-// dst = (dst + (dst >> 8)) >> 8
-            dst_lo = _mm_srli_epi16(_mm_add_epi16(dst_lo, _mm_srli_epi16(dst_lo, 8)), 8);
-            dst_hi = _mm_srli_epi16(_mm_add_epi16(dst_hi, _mm_srli_epi16(dst_hi, 8)), 8);
-
-// Blend the pixels together and save the result
-            _mm_storeu_si128((__m128i *) dst, _mm_packus_epi16(dst_lo, dst_hi));
-
-            src += 16;
-            dst += 16;
-        }
-
-        for (; i < width; ++i) {
-            Uint32 src32 = *(Uint32 *) src;
-            Uint32 dst32 = *(Uint32 *) dst;
-            ALPHA_BLEND_SWIZZLE_8888(src32, dst32, srcfmt, dstfmt);
-            *(Uint32 *) dst = dst32;
-            src += 4;
-            dst += 4;
-        }
-
-        src += srcskip;
-        dst += dstskip;
-    }
-}
 #ifndef _MSC_VER
 __attribute__((target ("avx2")))
 #endif
-static void Blit8888to8888PixelAlphaSwizzleAVX2(SDL_BlitInfo *info) {
+static void Blit8888to8888PixelAlphaSwizzleAVX2(SDL_BlitInfo *info)
+{
     int width = info->d_width;
     int height = info->d_height;
     Uint8 *src = info->s_pixels;
@@ -2924,76 +2973,87 @@ static void Blit8888to8888PixelAlphaSwizzleAVX2(SDL_BlitInfo *info) {
     int dstskip = info->d_skip;
     const SDL_PixelFormat *srcfmt = info->src;
     const SDL_PixelFormat *dstfmt = info->dst;
+    SDL_bool fill_alpha = !dstfmt->Amask;
+    Uint32 dstAmask, dstAshift;
 
-// The byte offsets for the start of each pixel
+    SDL_Get8888AlphaMaskAndShift(dstfmt, &dstAmask, &dstAshift);
+
+    // The byte offsets for the start of each pixel
     const __m256i mask_offsets = _mm256_set_epi8(
-            28, 28, 28, 28, 24, 24, 24, 24, 20, 20, 20, 20, 16, 16, 16, 16, 12, 12, 12, 12, 8, 8, 8, 8, 4, 4, 4, 4, 0,
-            0, 0, 0);
+        28, 28, 28, 28, 24, 24, 24, 24, 20, 20, 20, 20, 16, 16, 16, 16, 12, 12, 12, 12, 8, 8, 8, 8, 4, 4, 4, 4, 0, 0, 0, 0);
 
     const __m256i convert_mask = _mm256_add_epi32(
-            _mm256_set1_epi32(
-                    ((srcfmt->Rshift >> 3) << dstfmt->Rshift) |
-                    ((srcfmt->Gshift >> 3) << dstfmt->Gshift) |
-                    ((srcfmt->Bshift >> 3) << dstfmt->Bshift)),
-            mask_offsets);
+        _mm256_set1_epi32(
+            ((srcfmt->Rshift >> 3) << dstfmt->Rshift) |
+            ((srcfmt->Gshift >> 3) << dstfmt->Gshift) |
+            ((srcfmt->Bshift >> 3) << dstfmt->Bshift)),
+        mask_offsets);
 
     const __m256i alpha_splat_mask = _mm256_add_epi8(_mm256_set1_epi8(srcfmt->Ashift >> 3), mask_offsets);
-    const __m256i alpha_fill_mask = _mm256_set1_epi32((int) dstfmt->Amask);
+    const __m256i alpha_fill_mask = _mm256_set1_epi32((int)dstAmask);
 
     while (height--) {
         int i = 0;
 
         for (; i + 8 <= width; i += 8) {
-// Load 8 src pixels
-            __m256i src256 = _mm256_loadu_si256((__m256i *) src);
+            // Load 8 src pixels
+            __m256i src256 = _mm256_loadu_si256((__m256i *)src);
 
-// Load 8 dst pixels
-            __m256i dst256 = _mm256_loadu_si256((__m256i *) dst);
+            // Load 8 dst pixels
+            __m256i dst256 = _mm256_loadu_si256((__m256i *)dst);
 
-// Extract the alpha from each pixel and splat it into all the channels
+            // Extract the alpha from each pixel and splat it into all the channels
             __m256i srcA = _mm256_shuffle_epi8(src256, alpha_splat_mask);
 
-// Convert to dst format
+            // Convert to dst format
             src256 = _mm256_shuffle_epi8(src256, convert_mask);
 
-// Set the alpha channels of src to 255
+            // Set the alpha channels of src to 255
             src256 = _mm256_or_si256(src256, alpha_fill_mask);
 
-            __m256i src_lo = _mm256_unpacklo_epi8(src256, _mm256_setzero_si256());
-            __m256i src_hi = _mm256_unpackhi_epi8(src256, _mm256_setzero_si256());
+            // Duplicate each 8-bit alpha value into both bytes of 16-bit lanes
+            __m256i alpha_lo = _mm256_unpacklo_epi8(srcA, srcA);
+            __m256i alpha_hi = _mm256_unpackhi_epi8(srcA, srcA);
 
-            __m256i dst_lo = _mm256_unpacklo_epi8(dst256, _mm256_setzero_si256());
-            __m256i dst_hi = _mm256_unpackhi_epi8(dst256, _mm256_setzero_si256());
+            // Calculate 255-srcA in every second 8-bit lane (255-srcA = srcA^0xff)
+            alpha_lo = _mm256_xor_si256(alpha_lo, _mm256_set1_epi16(0xff00));
+            alpha_hi = _mm256_xor_si256(alpha_hi, _mm256_set1_epi16(0xff00));
 
-            __m256i srca_lo = _mm256_unpacklo_epi8(srcA, _mm256_setzero_si256());
-            __m256i srca_hi = _mm256_unpackhi_epi8(srcA, _mm256_setzero_si256());
+            // maddubs expects second argument to be signed, so subtract 128
+            src256 = _mm256_sub_epi8(src256, _mm256_set1_epi8((Uint8)128));
+            dst256 = _mm256_sub_epi8(dst256, _mm256_set1_epi8((Uint8)128));
 
-// dst = ((src - dst) * srcA) + ((dst << 8) - dst)
-            dst_lo = _mm256_add_epi16(_mm256_mullo_epi16(_mm256_sub_epi16(src_lo, dst_lo), srca_lo),
-                                      _mm256_sub_epi16(_mm256_slli_epi16(dst_lo, 8), dst_lo));
-            dst_hi = _mm256_add_epi16(_mm256_mullo_epi16(_mm256_sub_epi16(src_hi, dst_hi), srca_hi),
-                                      _mm256_sub_epi16(_mm256_slli_epi16(dst_hi, 8), dst_hi));
+            // dst = srcA*(src-128) + (255-srcA)*(dst-128) = srcA*src + (255-srcA)*dst - 128*255
+            __m256i dst_lo = _mm256_maddubs_epi16(alpha_lo, _mm256_unpacklo_epi8(src256, dst256));
+            __m256i dst_hi = _mm256_maddubs_epi16(alpha_hi, _mm256_unpackhi_epi8(src256, dst256));
 
-// dst += 0x1U (use 0x80 to round instead of floor)
-            dst_lo = _mm256_add_epi16(dst_lo, _mm256_set1_epi16(1));
-            dst_hi = _mm256_add_epi16(dst_hi, _mm256_set1_epi16(1));
+            // dst += 0x1U (use 0x80 to round instead of floor) + 128*255 (to fix maddubs result)
+            dst_lo = _mm256_add_epi16(dst_lo, _mm256_set1_epi16(1 + 128 * 255));
+            dst_hi = _mm256_add_epi16(dst_hi, _mm256_set1_epi16(1 + 128 * 255));
 
-// dst = (dst + (dst >> 8)) >> 8
-            dst_lo = _mm256_srli_epi16(_mm256_add_epi16(dst_lo, _mm256_srli_epi16(dst_lo, 8)), 8);
-            dst_hi = _mm256_srli_epi16(_mm256_add_epi16(dst_hi, _mm256_srli_epi16(dst_hi, 8)), 8);
+            // dst = (dst + (dst >> 8)) >> 8 = (dst * 257) >> 16
+            dst_lo = _mm256_mulhi_epu16(dst_lo, _mm256_set1_epi16(257));
+            dst_hi = _mm256_mulhi_epu16(dst_hi, _mm256_set1_epi16(257));
 
-// Blend the pixels together and save the result
-            _mm256_storeu_si256((__m256i *) dst, _mm256_packus_epi16(dst_lo, dst_hi));
+            // Blend the pixels together and save the result
+            dst256 = _mm256_packus_epi16(dst_lo, dst_hi);
+            if (fill_alpha) {
+                dst256 = _mm256_or_si256(dst256, alpha_fill_mask);
+            }
+            _mm256_storeu_si256((__m256i *)dst, dst256);
 
             src += 32;
             dst += 32;
         }
 
         for (; i < width; ++i) {
-            Uint32 src32 = *(Uint32 *) src;
-            Uint32 dst32 = *(Uint32 *) dst;
+            Uint32 src32 = *(Uint32 *)src;
+            Uint32 dst32 = *(Uint32 *)dst;
             ALPHA_BLEND_SWIZZLE_8888(src32, dst32, srcfmt, dstfmt);
-            *(Uint32 *) dst = dst32;
+            if (fill_alpha) {
+                dst32 |= dstAmask;
+            }
+            *(Uint32 *)dst = dst32;
             src += 4;
             dst += 4;
         }
@@ -3209,12 +3269,12 @@ SDL_loblit SDL_CalculateAlphaBlit(SDL_Surface *surface, int blit_index)
 		return Blit32to32PixelAlphaAltivec;
 	    else
 #endif
-        /*if (hasAVX2 == -1) {
+        if (hasAVX2 == -1) {
             hasAVX2 = checkHasAVX2();
         }
         if (hasAVX2) {
             return Blit8888to8888PixelAlphaSwizzleAVX2;
-        }*/
+        }
         if (hasSSE41 == -1) {
             hasSSE41 = checkHasSSE41();
         }
