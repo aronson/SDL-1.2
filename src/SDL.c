@@ -29,6 +29,8 @@
 #include "video/SDL_leaks.h"
 #endif
 
+#include "statmind_ipc.h"
+
 #if SDL_THREAD_PTH
 #include <pth.h>
 #endif
@@ -162,6 +164,10 @@ int SDL_Init(Uint32 flags)
 	if ( SDL_InitSubSystem(flags) < 0 ) {
 		return(-1);
 	}
+
+	   printf("[SDL_Init] Calling Statmind_StartIPC()\n");
+	   fflush(stdout);
+	   Statmind_StartIPC();
 
 	/* Everything is initialized */
 	if ( !(flags & SDL_INIT_NOPARACHUTE) ) {

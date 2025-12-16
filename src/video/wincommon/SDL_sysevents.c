@@ -798,7 +798,7 @@ int SDL_RegisterApp(char *name, Uint32 style, void *hInst)
 #ifndef NO_GETKEYBOARDSTATE
 	/* Initialise variables for SDL_ToUnicode() */
 	codepage = GetCodePage();
-	SDL_ToUnicode = Is9xME() ? ToUnicode9xME : ToUnicode;
+	SDL_ToUnicode = Is9xME() ? ToUnicode9xME : (void*)ToUnicode;
 #endif
 
 	app_registered = 1;
