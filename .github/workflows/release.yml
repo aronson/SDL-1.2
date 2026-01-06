@@ -1,0 +1,28 @@
+name: CI/CD
+
+on:
+  push:
+    tags:
+    - '*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    container:
+      image: docker.io/mstorsjo/llvm-mingw:latest
+    steps:
+    - name: Clone sources
+      uses: actions/checkout@v4
+    - name: Autoconf
+      run: libtoolize --force && aclocal && autoheader && autoreconf --force --install
+    - name: Configure build
+      run: ./cross-toolchain.sh
+    - name: Make
+      run: make -j
+    - name: Release Cogmind SDL.dll
+      uses: ncipollo/release-action@v1
+      with:
+        artifacts: "build/.libs/SDL.dll"
+
