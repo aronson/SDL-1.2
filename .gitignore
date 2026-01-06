@@ -77,3 +77,5 @@ sdl-config
 sdl.pc
 test/aclocal.m4
 test/configure
+
+.idea/
